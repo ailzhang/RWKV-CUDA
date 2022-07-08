@@ -9,6 +9,10 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = False
 torch.backends.cuda.matmul.allow_tf32 = False
 
+import time
+import taichi as ti
+ti.init(arch=ti.cuda, kernel_profiler=True)
+
 ######################################################################################################
 # From https://github.com/BlinkDL/RWKV-CUDA
 # On GTX1070 mobile:
@@ -58,6 +62,17 @@ def RUN_FORMULA_VERY_SLOW(w, k, B, C, T, eps):
 def RUN_PYTORCH(w, k, B, C, T, eps):
     # this shall equal the formula
     return F.conv1d(nn.ZeroPad2d((T-1, 0, 0, 0))(k), w.unsqueeze(1), groups=C) + eps
+
+@ti.kernel
+def RUN_TAICHI(out: ti.types.ndarray(field_dim=3),
+        w: ti.types.ndarray(field_dim=2),
+        k: ti.types.ndarray(field_dim=3),
+        B: ti.i32, C: ti.i32, T: ti.i32, eps: ti.f32):
+    for b, c, t in out:
+        s = eps
+        for u in range(0, t+1):
+            s += w[c, (T-1)-(t-u)] * k[b, c, u]
+        out[b, c, t] = s
 
 
 ######################################################################################################
@@ -122,9 +137,13 @@ def CHECK_PYTORCH():
 
     r0 = RUN_FORMULA_VERY_SLOW(w, k, B, C, T, eps)
     r1 = RUN_PYTORCH(w, k, B, C, T, eps)
+    r2 = torch.zeros(B, C, T, device='cuda')
+    RUN_TAICHI(r2, w, k, B, C, T, eps)
 
     print('--> pytorch correct =', torch.allclose(r0, r1),
           ', err ratio =', get_err_ratio(r0, r1))
+    print('--> taichi correct =', torch.allclose(r0, r2),
+          ', err ratio =', get_err_ratio(r0, r2))
 
 
 def CHECK_CUDA(silent=False):
@@ -151,8 +170,23 @@ def CHECK_CUDA(silent=False):
         print('CUDA forward\n', prof.key_averages(group_by_stack_n=5).table(
             sort_by='self_cuda_time_total', row_limit=5))
 
+    # Taichi
+    out = torch.rand(B, C, T, requires_grad=True, device='cuda')
+    ti.profiler.clear_kernel_profiler_info()
+    start = time.time_ns()
+    RUN_TAICHI(out, w, k, B, C, T, eps)
+    ti.sync()
+    if not silent:
+        print(f'Taichi duration: {(time.time_ns() - start)/ (10 ** 6)}ms')
+        ti.profiler.print_kernel_profiler_info('trace')
+
     print('--> fwd correct =', torch.allclose(r1, r2),
           ', err ratio =', get_err_ratio(r1, r2))
+    print('--> Taichi fwd correct =', torch.allclose(r1, out),
+          ', err ratio =', get_err_ratio(r1, out))
+
+    # FIXME: skip backward for now
+    return
 
     # check backward
 
