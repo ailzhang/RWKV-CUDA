@@ -23,7 +23,7 @@ ti.init(arch=ti.cuda, kernel_profiler=True)
 # CUDA kernel v3 = fwd 3.4ms bwd 23ms (B-group)
 ######################################################################################################
 
-CUDA_KERNEL_VERSION = 3  # CUDA kernel version = 0,1,2
+CUDA_KERNEL_VERSION = 4  # CUDA kernel version = 0,1,2
 
 
 def set_seed(seed):
@@ -64,7 +64,7 @@ def RUN_PYTORCH(w, k, B, C, T, eps):
     return F.conv1d(nn.ZeroPad2d((T-1, 0, 0, 0))(k), w.unsqueeze(1), groups=C) + eps
 
 @ti.kernel
-def RUN_TAICHI(out: ti.types.ndarray(field_dim=3),
+def RUN_TAICHI_1(out: ti.types.ndarray(field_dim=3),
         w: ti.types.ndarray(field_dim=2),
         k: ti.types.ndarray(field_dim=3),
         B: ti.i32, C: ti.i32, T: ti.i32, eps: ti.f32):
@@ -74,13 +74,60 @@ def RUN_TAICHI(out: ti.types.ndarray(field_dim=3),
             s += w[c, (T-1)-(t-u)] * k[b, c, u]
         out[b, c, t] = s
 
+ti_vec4f = ti.types.vector(4, dtype=float)
+@ti.kernel
+def RUN_TAICHI_2(out: ti.types.ndarray(field_dim=3),
+        w: ti.types.ndarray(field_dim=2),
+        k: ti.types.ndarray(field_dim=3),
+        B: ti.i32, C: ti.i32, T: ti.i32, eps: ti.f32):
+    for b, c, t in ti.ndrange(B, C, T // 4):
+        # Group t with factor 4
+        t_block = t * 4
+        s_mat = ti_vec4f((eps, eps, eps, eps))
+        for u in range(0, t_block+1):
+            k_val = k[b, c, u]
+            w_offset = (T - 1) - (t_block - u)
+            for i in ti.static(range(4)):
+                s_mat[i] += w[c, w_offset - i] * k_val
+        # Compute the remaining triangle.
+        for j in ti.static(range(1, 4)):
+            for i in ti.static(range(j)):
+                s_mat[j] += w[c, T - j + i] * k[b, c, t_block + 1 + i]
+        for i_t in ti.static(range(4)):
+            out[b, c, t_block + i_t] = s_mat[i_t]
+
+ti_mat4f = ti.types.matrix(8, 4, dtype=float)
+@ti.kernel
+def RUN_TAICHI(out: ti.types.ndarray(field_dim=3),
+        w: ti.types.ndarray(field_dim=2),
+        k: ti.types.ndarray(field_dim=3),
+        B: ti.i32, C: ti.i32, T: ti.i32, eps: ti.f32):
+    ti.loop_config(block_dim=128)
+    for b, c, t in ti.ndrange(B // 8, C, T // 4):
+        # Group both b and t with factor 4
+        t_block = t * 4
+        s_mat = ti_mat4f(((eps, eps, eps, eps),) * 8)
+        for u in range(0, t_block+1):
+            w_offset = (T - 1) - (t_block - u)
+            for bi in ti.static(range(8)):
+                k_val = k[b * 8 + bi, c, u]
+                for i in ti.static(range(4)):
+                    s_mat[bi, i] += w[c, w_offset - i] * k_val
+        # Compute the remaining triangle.
+        for bi in ti.static(range(8)):
+            for j in ti.static(range(1, 4)):
+                for i in ti.static(range(j)):
+                    s_mat[bi, j] += w[c, T - j + i] * k[b * 8 + bi, c, t_block + 1 + i]
+            for i_t in ti.static(range(4)):
+                out[b * 8 + bi, c, t_block + i_t] = s_mat[bi, i_t]
+
 
 ######################################################################################################
 # Load the CUDA kernel
 ######################################################################################################
 
 T_MAX = 768
-B_GROUP_FORWARD = 8
+B_GROUP_FORWARD = 4
 B_GROUP_BACKWARD = 2
 
 timex_cuda = load(name="timex", sources=["cuda/timex_op.cpp", "cuda/timex_cuda_v" + str(CUDA_KERNEL_VERSION) + ".cu"],
@@ -222,7 +269,7 @@ if __name__ == "__main__":
     print('\n\nVerify pytorch...')
     CHECK_PYTORCH()
     print('\n\nCUDA warmup...')
-    CHECK_CUDA(silent=True)  # warmup
+    CHECK_CUDA(silent=False)  # warmup
     CHECK_CUDA(silent=True)  # warmup
     print('\n\nCUDA benchmark...')
     CHECK_CUDA(silent=False)  # benchmark
