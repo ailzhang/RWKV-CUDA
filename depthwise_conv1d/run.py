@@ -178,7 +178,7 @@ def timex_taichi_backward_group_t(
             gk[b, c, t+i] = s[i]
 
 bwd_t = 6
-bwd_b = 1
+bwd_b = 4
 ti_back_matf = ti.types.matrix(bwd_b, bwd_t, dtype=float)
 @ti.kernel
 def timex_taichi_backward(
@@ -192,8 +192,8 @@ def timex_taichi_backward(
         t = t_block * bwd_t
         b = b_block * bwd_b
         s = ti_back_matf(((0.0,) * bwd_t,)*bwd_b)
-        for u in range(0, t+1):
-            for bi in ti.static(range(0, bwd_b)):
+        for bi in ti.static(range(0, bwd_b)):
+            for u in range(0, t+1):
                 for i in ti.static(range(0, bwd_t)):
                     s[bi, i] += gwk[b + bi, c, (T-1)-(t+i-u)] * k[b + bi, c, u]
         # The last triangle is specialized
