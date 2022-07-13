@@ -96,30 +96,30 @@ def RUN_TAICHI_2(out: ti.types.ndarray(field_dim=3),
         for i_t in ti.static(range(4)):
             out[b, c, t_block + i_t] = s_mat[i_t]
 
-ti_mat4f = ti.types.matrix(8, 4, dtype=float)
+t_group = 6
+b_group = 8
+ti_mat4f = ti.types.matrix(b_group, t_group, dtype=float)
 @ti.kernel
 def RUN_TAICHI(out: ti.types.ndarray(field_dim=3),
         w: ti.types.ndarray(field_dim=2),
         k: ti.types.ndarray(field_dim=3),
         B: ti.i32, C: ti.i32, T: ti.i32, eps: ti.f32):
-    ti.loop_config(block_dim=128)
-    for b, c, t in ti.ndrange(B // 8, C, T // 4):
+    for b, c, t in ti.ndrange(B // b_group, C, T // t_group):
         # Group both b and t with factor 4
-        t_block = t * 4
-        s_mat = ti_mat4f(((eps, eps, eps, eps),) * 8)
+        t_block = t * t_group
+        s_mat = ti_mat4f(((eps,) * t_group,) * b_group)
         for u in range(0, t_block+1):
-            w_offset = (T - 1) - (t_block - u)
-            for bi in ti.static(range(8)):
-                k_val = k[b * 8 + bi, c, u]
-                for i in ti.static(range(4)):
-                    s_mat[bi, i] += w[c, w_offset - i] * k_val
-        # Compute the remaining triangle.
-        for bi in ti.static(range(8)):
-            for j in ti.static(range(1, 4)):
+            for bi in ti.static(range(b_group)):
+                k_val = k[b * b_group + bi, c, u]
+                for i in ti.static(range(t_group)):
+                    s_mat[bi, i] += w[c, (T-1) - (t_block - (u - i))] * k_val
+        # Compute the remaining triangle in the thread group.
+        for bi in ti.static(range(b_group)):
+            for j in ti.static(range(1, t_group)):
                 for i in ti.static(range(j)):
-                    s_mat[bi, j] += w[c, T - j + i] * k[b * 8 + bi, c, t_block + 1 + i]
-            for i_t in ti.static(range(4)):
-                out[b * 8 + bi, c, t_block + i_t] = s_mat[bi, i_t]
+                    s_mat[bi, j] += w[c, T - j + i] * k[b * b_group + bi, c, t_block + 1 + i]
+            for i_t in ti.static(range(t_group)):
+                out[b * b_group + bi, c, t_block + i_t] = s_mat[bi, i_t]
 
 
 ######################################################################################################
